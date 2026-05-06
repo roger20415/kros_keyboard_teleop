@@ -1,6 +1,6 @@
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import TwistStamped
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from builtin_interfaces.msg import Duration
 import sys
@@ -64,7 +64,7 @@ class CustomTeleopNode(Node):
         super().__init__('custom_teleop_node')
         
         # 底盤 Publisher
-        self.cmd_publisher_ = self.create_publisher(Twist, '/base_controller/cmd_vel', 10)
+        self.cmd_publisher_ = self.create_publisher(TwistStamped, '/base_controller/cmd_vel', 10)
         
         # 手臂 Publisher (使用 Topic 發送軌跡)
         self.arm_publisher_ = self.create_publisher(JointTrajectory, '/arm_controller/joint_trajectory', 10)
