@@ -56,3 +56,4 @@ htmlcov/
 # Misc
 *.log
 *.pid
+*/__pycache__/
