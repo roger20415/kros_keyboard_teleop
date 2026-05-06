@@ -2,13 +2,16 @@ import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import TwistStamped
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+from sensor_msgs.msg import JointState
 from builtin_interfaces.msg import Duration
 import sys
 import termios
 import tty
 import select
+import yaml
+import os
 
-# 終端機的操作提示訊息
+
 msg = """
 小車與機械臂遙控節點已啟動！(ROS 2 Jazzy)
 ---------------------------------------
@@ -33,7 +36,7 @@ q : 結束程式
 ---------------------------------------
 """
 
-# 底盤按鍵對應 (線速度係數 x, 角速度係數 z)
+
 moveBindings = {
     'w': (1.0, 0.0),
     'a': (0.0, 1.0),
@@ -41,7 +44,7 @@ moveBindings = {
     'd': (0.0, -1.0),
 }
 
-# 手臂按鍵對應 (關節索引, 增減弧度)
+
 # index 0: arm_1_joint, index 1: arm_2_joint, index 2: gripper_joint
 armBindings = {
     'l': (0, -0.1),
@@ -55,30 +58,66 @@ armBindings = {
 class CustomTeleopNode(Node):
     """
     Node class responsible for handling keyboard input and publishing 
-    both Twist and JointTrajectory messages.
+    both Twist and JointTrajectory messages, while monitoring joint states.
     """
     def __init__(self):
         """
-        Initialize the node, publishers, speed parameters, and arm limits.
+        Initialize the node, load configurations, publishers, subscribers, and set up variables.
         """
         super().__init__('custom_teleop_node')
         
-        # 底盤 Publisher
-        self.cmd_publisher_ = self.create_publisher(TwistStamped, '/base_controller/cmd_vel', 10)
+        config_path = os.path.join(os.path.dirname(__file__), 'config.yaml')
+        with open(config_path, 'r', encoding='utf-8') as f:
+            self.config = yaml.safe_load(f)
+
+        self.normal_speed = self.config['base']['normal_speed']
+        self.normal_turn = self.config['base']['normal_turn']
+        self.sprint_speed = self.config['base']['sprint_speed']
+        self.sprint_turn = self.config['base']['sprint_turn']
         
-        # 手臂 Publisher (使用 Topic 發送軌跡)
+        self.arm_max = self.config['arm']['max_rad']
+        self.arm_min = self.config['arm']['min_rad']
+        self.gripper_max = self.config['gripper']['max_rad']
+        self.gripper_min = self.config['gripper']['min_rad']
+        
+        self.base_publisher_ = self.create_publisher(TwistStamped, '/base_controller/cmd_vel', 10)
         self.arm_publisher_ = self.create_publisher(JointTrajectory, '/arm_controller/joint_trajectory', 10)
         
-        # 底盤速度設定
-        self.normal_speed = 0.2
-        self.normal_turn = 1.0
-        self.sprint_speed = 0.546
-        self.sprint_turn = 3.983
+        self.joint_state_sub_ = self.create_subscription(
+            JointState,
+            '/joint_states',
+            self.joint_state_callback,
+            10
+        )
 
-        # 手臂初始目標角度 (Base, Shoulder, Gripper)
-        # 範圍限制為 0.0 ~ 4.189 rad (對應硬體 0~240度)
-        self.arm_positions = [2.1, 2.1, 2.1]
+        self.arm_positions = [
+            (self.arm_max + self.arm_min) / 2, 
+            (self.arm_max + self.arm_min) / 2, 
+            (self.gripper_max + self.gripper_min) / 2
+        ]
         self.arm_joint_names = ['arm_1_joint', 'arm_2_joint', 'gripper_joint']
+        
+        self.initialized_from_state = False
+
+    def joint_state_callback(self, msg):
+        """
+        Callback to update the initial arm positions from the actual joint states.
+        """
+        if not self.initialized_from_state:
+            try:
+                idx_1 = msg.name.index('arm_1_joint')
+                idx_2 = msg.name.index('arm_2_joint')
+                idx_g = msg.name.index('gripper_joint')
+                
+                self.arm_positions[0] = msg.position[idx_1]
+                self.arm_positions[1] = msg.position[idx_2]
+                self.arm_positions[2] = msg.position[idx_g]
+                
+                self.initialized_from_state = True
+                self.get_logger().info("已成功讀取手臂與夾爪當前角度，可以開始遙控。")
+
+            except ValueError:
+                pass
 
     def get_key(self, settings, timeout=0.1):
         """
@@ -86,10 +125,12 @@ class CustomTeleopNode(Node):
         """
         tty.setraw(sys.stdin.fileno())
         rlist, _, _ = select.select([sys.stdin], [], [], timeout)
+        
         if rlist:
             key = sys.stdin.read(1)
         else:
             key = ''
+            
         termios.tcsetattr(sys.stdin, termios.TCSADRAIN, settings)
         return key
 
@@ -102,7 +143,6 @@ class CustomTeleopNode(Node):
         
         point = JointTrajectoryPoint()
         point.positions = self.arm_positions
-        # 設定手臂到達目標的時間 (200 毫秒，使其動作平滑且反應快速)
         point.time_from_start = Duration(sec=0, nanosec=200_000_000)
         
         msg.points.append(point)
@@ -110,7 +150,7 @@ class CustomTeleopNode(Node):
 
     def run(self):
         """
-        Main loop to process keyboard events and publish commands.
+        Main loop to process keyboard events, spin for callbacks, and publish commands.
         """
         settings = termios.tcgetattr(sys.stdin)
         print(msg)
@@ -124,15 +164,24 @@ class CustomTeleopNode(Node):
 
         try:
             while rclpy.ok():
+                rclpy.spin_once(self, timeout_sec=0.0)
+                
                 key = self.get_key(settings)
+
+                if key.lower() in armBindings.keys() and not self.initialized_from_state:
+                    self.get_logger().warn("尚未讀取到夾爪與手臂角度，請稍候再試...")
+                    continue
 
                 # --- 處理手臂控制 ---
                 if key.lower() in armBindings.keys():
                     joint_idx, step = armBindings[key.lower()]
                     self.arm_positions[joint_idx] += step
                     
-                    # 限制角度在安全範圍內 (0.0 ~ 4.189 rad)
-                    self.arm_positions[joint_idx] = max(0.0, min(4.189, self.arm_positions[joint_idx]))
+                    # 針對夾爪與其他手臂關節分開設置安全範圍
+                    if joint_idx == 2:  # 夾爪 (Gripper) 限制
+                        self.arm_positions[joint_idx] = max(self.gripper_min, min(self.gripper_max, self.arm_positions[joint_idx]))
+                    else:               # 手臂 (Base, Shoulder) 限制
+                        self.arm_positions[joint_idx] = max(self.arm_min, min(self.arm_max, self.arm_positions[joint_idx]))
                     
                     # 只有按手臂按鍵時才發送手臂指令
                     self.publish_arm_command()
@@ -164,7 +213,7 @@ class CustomTeleopNode(Node):
                 twist_msg.header.stamp = self.get_clock().now().to_msg()
                 twist_msg.twist.linear.x = x * current_speed
                 twist_msg.twist.angular.z = th * current_turn
-                self.cmd_publisher_.publish(twist_msg)
+                self.base_publisher_.publish(twist_msg)
                 
         except Exception as e:
             self.get_logger().error(f"執行時發生錯誤: {e}")
@@ -173,8 +222,7 @@ class CustomTeleopNode(Node):
             # 發送停止指令確保小車底盤停止
             empty_twist = TwistStamped()
             empty_twist.header.stamp = self.get_clock().now().to_msg()
-            # twist 預設為零向量，直接發佈即可
-            self.cmd_publisher_.publish(empty_twist)
+            self.base_publisher_.publish(empty_twist)
             termios.tcsetattr(sys.stdin, termios.TCSADRAIN, settings)
 
 def main(args=None):

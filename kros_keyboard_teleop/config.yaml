@@ -1,0 +1,17 @@
+# Keyboard Teleop Configuration
+
+base:
+  normal_speed: 0.2
+  normal_turn: 1.0
+  sprint_speed: 0.546
+  sprint_turn: 3.983
+
+arm:
+  max_rad: 4.189
+  min_rad: 0.0
+
+gripper:
+  max_rad: 1.26
+  min_rad: 0.0
+
+safety_rad: 0.05
