@@ -11,7 +11,6 @@ import select
 import yaml
 import os
 
-
 msg = """
 小車與機械臂遙控節點已啟動！(ROS 2 Jazzy)
 ---------------------------------------
@@ -32,11 +31,12 @@ msg = """
    o : 夾爪 (Gripper) 閉合/增加
 
 q : 結束程式
-空白鍵 / 其他按鍵 : 底盤煞車停止
+空白鍵 : 夾爪一鍵開/關，且底盤煞車停止
+其他按鍵 : 底盤煞車停止
 ---------------------------------------
 """
 
-
+# (key: (linear, angular))
 moveBindings = {
     'w': (1.0, 0.0),
     'a': (0.0, 1.0),
@@ -44,8 +44,8 @@ moveBindings = {
     'd': (0.0, -1.0),
 }
 
-
 # index 0: arm_1_joint, index 1: arm_2_joint, index 2: gripper_joint
+# index 1: rotate direction
 armBindings = {
     'l': (0, -0.1),
     'j': (0, 0.1),
@@ -98,6 +98,8 @@ class CustomTeleopNode(Node):
         self.arm_joint_names = ['arm_1_joint', 'arm_2_joint', 'gripper_joint']
         
         self.initialized_from_state = False
+        
+        self.is_gripper_open = True
 
     def joint_state_callback(self, msg):
         """
@@ -113,8 +115,16 @@ class CustomTeleopNode(Node):
                 self.arm_positions[1] = msg.position[idx_2]
                 self.arm_positions[2] = msg.position[idx_g]
                 
+                gripper_threshold = (self.gripper_max + self.gripper_min) / 2.0
+                if self.arm_positions[2] > gripper_threshold:
+                    self.is_gripper_open = True
+                else:
+                    self.is_gripper_open = False
+                
                 self.initialized_from_state = True
-                self.get_logger().info("已成功讀取手臂與夾爪當前角度，可以開始遙控。")
+                
+                state_str = "開啟" if self.is_gripper_open else "閉合"
+                self.get_logger().info(f"已成功讀取手臂與夾爪當前角度。夾爪目前狀態: {state_str}。可以開始遙控。")
 
             except ValueError:
                 pass
@@ -172,22 +182,40 @@ class CustomTeleopNode(Node):
                     self.get_logger().warn("尚未讀取到夾爪與手臂角度，請稍候再試...")
                     continue
 
-                # --- 處理手臂控制 ---
                 if key.lower() in armBindings.keys():
                     joint_idx, step = armBindings[key.lower()]
                     self.arm_positions[joint_idx] += step
                     
-                    # 針對夾爪與其他手臂關節分開設置安全範圍
-                    if joint_idx == 2:  # 夾爪 (Gripper) 限制
+                    if joint_idx == 2:
                         self.arm_positions[joint_idx] = max(self.gripper_min, min(self.gripper_max, self.arm_positions[joint_idx]))
-                    else:               # 手臂 (Base, Shoulder) 限制
+                    else:
                         self.arm_positions[joint_idx] = max(self.arm_min, min(self.arm_max, self.arm_positions[joint_idx]))
                     
-                    # 只有按手臂按鍵時才發送手臂指令
                     self.publish_arm_command()
-                    continue # 處理完手臂就不處理底盤邏輯
+                    continue 
+                
+                elif key == ' ':
+                    if not self.initialized_from_state:
+                        self.get_logger().warn("尚未讀取到夾爪角度，請稍候再試...")
+                        continue
+                        
+                    gripper_threshold = (self.gripper_max + self.gripper_min) / 2.0
+                    self.is_gripper_open = self.arm_positions[2] > gripper_threshold
+                    
+                    self.is_gripper_open = not self.is_gripper_open
+                    
+                    if self.is_gripper_open:
+                        self.arm_positions[2] = self.gripper_max
+                        self.get_logger().info("夾爪狀態：全開")
+                    else:
+                        self.arm_positions[2] = self.gripper_min
+                        self.get_logger().info("夾爪狀態：全關")
+                        
+                    self.publish_arm_command()
+                    
+                    x = 0.0
+                    th = 0.0
 
-                # --- 處理底盤控制 ---
                 elif key.lower() in moveBindings.keys():
                     if key.isupper():
                         current_speed = self.sprint_speed
@@ -200,15 +228,14 @@ class CustomTeleopNode(Node):
                     th = moveBindings[key.lower()][1]
 
                 elif key == 'q' or key == '\x03': 
-                    break # 結束程式
+                    break 
                     
                 else:
                     x = 0.0
                     th = 0.0
                     if key == '' and status == 0:
-                        pass # 如果沒按按鍵，維持上一次的速度(或者為0)
+                        pass
 
-                # 發佈底盤 TwistStamped 訊息
                 twist_msg = TwistStamped()
                 twist_msg.header.stamp = self.get_clock().now().to_msg()
                 twist_msg.twist.linear.x = x * current_speed
@@ -219,7 +246,6 @@ class CustomTeleopNode(Node):
             self.get_logger().error(f"執行時發生錯誤: {e}")
             
         finally:
-            # 發送停止指令確保小車底盤停止
             empty_twist = TwistStamped()
             empty_twist.header.stamp = self.get_clock().now().to_msg()
             self.base_publisher_.publish(empty_twist)
