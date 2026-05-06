@@ -159,18 +159,21 @@ class CustomTeleopNode(Node):
                     if key == '' and status == 0:
                         pass # 如果沒按按鍵，維持上一次的速度(或者為0)
 
-                # 發佈底盤 Twist 訊息
-                twist = Twist()
-                twist.linear.x = x * current_speed
-                twist.angular.z = th * current_turn
-                self.cmd_publisher_.publish(twist)
+                # 發佈底盤 TwistStamped 訊息
+                twist_msg = TwistStamped()
+                twist_msg.header.stamp = self.get_clock().now().to_msg()
+                twist_msg.twist.linear.x = x * current_speed
+                twist_msg.twist.angular.z = th * current_turn
+                self.cmd_publisher_.publish(twist_msg)
                 
         except Exception as e:
             self.get_logger().error(f"執行時發生錯誤: {e}")
             
         finally:
             # 發送停止指令確保小車底盤停止
-            empty_twist = Twist()
+            empty_twist = TwistStamped()
+            empty_twist.header.stamp = self.get_clock().now().to_msg()
+            # twist 預設為零向量，直接發佈即可
             self.cmd_publisher_.publish(empty_twist)
             termios.tcsetattr(sys.stdin, termios.TCSADRAIN, settings)
 
