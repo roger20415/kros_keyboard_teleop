@@ -11,7 +11,7 @@ import select
 import yaml
 import os
 
-from throw import ThrowManager
+from .throw import ThrowManager
 
 msg = """
 小車與機械臂遙控節點已啟動！(ROS 2 Jazzy)
