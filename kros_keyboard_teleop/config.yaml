@@ -19,6 +19,6 @@ safety_rad: 0.05
 
 throw:
   pos_ready: [2.4, 2.09, 0]
-  pos_accelerate: [1.407, 1.75, 1.85]
-  pos_release: [0.9, 1.2, 2.12]
-  pos_end: [0.85, 1.2, 2.12]
+  pos_accelerate: [1.407, 1.75, 0.8]
+  pos_release: [1.0, 1.4, 2.12]
+  pos_end: [1.0, 1.4, 2.12]
