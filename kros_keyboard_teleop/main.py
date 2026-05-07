@@ -11,6 +11,8 @@ import select
 import yaml
 import os
 
+from throw import ThrowManager
+
 msg = """
 小車與機械臂遙控節點已啟動！(ROS 2 Jazzy)
 ---------------------------------------
@@ -29,6 +31,7 @@ msg = """
    l : 手臂關節 1 (Base) 減少
    u : 夾爪 (Gripper) 打開/減少
    o : 夾爪 (Gripper) 閉合/增加
+   t : 一鍵向上拋投物品 (Toss)
 
 q : 結束程式
 空白鍵 : 夾爪一鍵開/關，且底盤煞車停止
@@ -69,6 +72,8 @@ class CustomTeleopNode(Node):
         config_path = os.path.join(os.path.dirname(__file__), 'config.yaml')
         with open(config_path, 'r', encoding='utf-8') as f:
             self.config = yaml.safe_load(f)
+
+        self.throw_manager = ThrowManager(self)
 
         self.normal_speed = self.config['base']['normal_speed']
         self.normal_turn = self.config['base']['normal_turn']
@@ -153,7 +158,7 @@ class CustomTeleopNode(Node):
         
         point = JointTrajectoryPoint()
         point.positions = self.arm_positions
-        point.time_from_start = Duration(sec=0, nanosec=200_000_000)
+        point.time_from_start = Duration(sec=0, nanosec=100_000_000)
         
         msg.points.append(point)
         self.arm_publisher_.publish(msg)
@@ -226,6 +231,23 @@ class CustomTeleopNode(Node):
                         
                     x = moveBindings[key.lower()][0]
                     th = moveBindings[key.lower()][1]
+
+                elif key.lower() == 't':
+                    if not self.initialized_from_state:
+                        self.get_logger().warn("尚未讀取到手臂狀態，無法拋投...")
+                        continue
+                    
+                    # 1. 先讓車子煞車停止，確保拋投穩定
+                    empty_twist = TwistStamped()
+                    empty_twist.header.stamp = self.get_clock().now().to_msg()
+                    self.base_publisher_.publish(empty_twist)
+                    
+                    # 2. 執行拋投動作 (這會阻塞 main loop 大約 3 秒)
+                    self.throw_manager.execute_throw()
+                    
+                    # 3. 拋投完後重置底盤速度變數
+                    x = 0.0
+                    th = 0.0
 
                 elif key == 'q' or key == '\x03': 
                     break 
